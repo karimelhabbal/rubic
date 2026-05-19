@@ -1,0 +1,8 @@
+# key.properties — إعدادات توقيع APK
+# انسخ هذا الملف إلى android/key.properties وأضف بياناتك
+# لا تضع هذا الملف في Git!
+
+storePassword=YOUR_KEYSTORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=rubik_solver
+storeFile=../rubik-release.jks

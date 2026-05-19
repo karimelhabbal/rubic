@@ -1,0 +1,203 @@
+workflows:
+  android-release:
+    name: Android Release APK - حل مكعب روبيك
+    max_build_duration: 60
+    instance_type: mac_mini_m1
+
+    environment:
+      flutter: 3.24.5
+      java: 17
+      groups:
+        - keystore_credentials   # Add this group in Codemagic Environment Variables
+      vars:
+        PACKAGE_NAME: "com.rubik.solver"
+        # These come from the keystore_credentials group:
+        # CM_KEYSTORE          → base64-encoded .jks keystore (File type)
+        # CM_KEYSTORE_PASSWORD → your keystore password
+        # CM_KEY_ALIAS         → your key alias
+        # CM_KEY_PASSWORD      → your key password
+
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: main
+          include: true
+        - pattern: master
+          include: true
+
+    scripts:
+      # ── 1. Print environment info ──────────────────────────────────
+      - name: Print versions
+        script: |
+          echo "Flutter: $(flutter --version | head -1)"
+          echo "Dart:    $(dart --version)"
+          echo "Java:    $(java -version 2>&1 | head -1)"
+          echo "Gradle:  $(cd android && ./gradlew --version | grep Gradle)"
+
+      # ── 2. Install Cairo font (Arabic) ────────────────────────────
+      - name: Download Cairo Arabic font
+        script: |
+          mkdir -p assets/fonts
+          # Download Cairo font subset from jsDelivr CDN
+          curl -fsSL "https://cdn.jsdelivr.net/npm/@fontsource/cairo@5.0.8/files/cairo-arabic-400-normal.woff2" \
+               -o assets/fonts/Cairo-Regular.woff2 || true
+          # Fallback: download TTF from GitHub release mirror
+          curl -fsSL "https://github.com/google/fonts/raw/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" \
+               -o assets/fonts/Cairo-Regular.ttf || true
+          curl -fsSL "https://github.com/google/fonts/raw/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" \
+               -o assets/fonts/Cairo-Bold.ttf || true
+          curl -fsSL "https://github.com/google/fonts/raw/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" \
+               -o assets/fonts/Cairo-SemiBold.ttf || true
+          echo "Font files:"
+          ls -lh assets/fonts/
+
+      # ── 3. Fix pubspec: use google_fonts instead of local fonts ───
+      - name: Patch pubspec for CI (remove local font dependency)
+        script: |
+          # Remove the local fonts section from pubspec so it doesn't fail
+          # if font files are missing — google_fonts pkg fetches them at runtime
+          python3 - << 'PYEOF'
+          import re, pathlib
+
+          p = pathlib.Path("pubspec.yaml")
+          text = p.read_text()
+
+          # Remove the fonts: block entirely (we use google_fonts at runtime)
+          text = re.sub(
+              r"\s*fonts:\s*\n(\s+-.*\n(\s+.*\n)*)*",
+              "\n",
+              text
+          )
+          p.write_text(text)
+          print("pubspec.yaml patched:")
+          print(text)
+          PYEOF
+
+      # ── 4. Get Flutter packages ────────────────────────────────────
+      - name: Flutter pub get
+        script: flutter pub get
+
+      # ── 5. Run analyzer (non-blocking) ────────────────────────────
+      - name: Flutter analyze
+        script: flutter analyze --no-fatal-infos || true
+
+      # ── 6. Set up keystore signing ────────────────────────────────
+      - name: Set up keystore
+        script: |
+          # Decode keystore from base64 env variable (set in Codemagic UI)
+          if [ -n "$CM_KEYSTORE" ]; then
+            echo "$CM_KEYSTORE" | base64 --decode > android/app/rubik-release.jks
+            echo "✅ Keystore decoded"
+
+            # Write key.properties
+            cat > android/key.properties << EOF
+          storePassword=$CM_KEYSTORE_PASSWORD
+          keyPassword=$CM_KEY_PASSWORD
+          keyAlias=$CM_KEY_ALIAS
+          storeFile=rubik-release.jks
+          EOF
+            echo "✅ key.properties written"
+          else
+            echo "⚠️  No keystore provided — using debug signing"
+          fi
+
+      # ── 7. Patch build.gradle for keystore signing ─────────────────
+      - name: Configure release signing in build.gradle
+        script: |
+          if [ -f "android/key.properties" ]; then
+            python3 - << 'PYEOF'
+          import pathlib
+
+          gradle = pathlib.Path("android/app/build.gradle")
+          text = gradle.read_text()
+
+          signing_config = """
+          def keystoreProperties = new Properties()
+          def keystorePropertiesFile = rootProject.file('key.properties')
+          if (keystorePropertiesFile.exists()) {
+              keystorePropertiesFile.withReader('UTF-8') { reader ->
+                  keystoreProperties.load(reader)
+              }
+          }
+          """
+
+          signing_block = """
+              signingConfigs {
+                  release {
+                      keyAlias keystoreProperties['keyAlias']
+                      keyPassword keystoreProperties['keyPassword']
+                      storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+                      storePassword keystoreProperties['storePassword']
+                  }
+              }
+          """
+
+          # Insert before android { block
+          text = text.replace(
+              'android {',
+              signing_config + '\nandroid {\n' + signing_block,
+              1
+          )
+
+          # Replace debug signing with release signing
+          text = text.replace(
+              'signingConfig signingConfigs.debug',
+              'signingConfig signingConfigs.release'
+          )
+
+          gradle.write_text(text)
+          print("✅ build.gradle updated with release signing")
+          PYEOF
+          else
+            echo "ℹ️  Skipping signing config patch (debug mode)"
+          fi
+
+      # ── 8. Build release APK ──────────────────────────────────────
+      - name: Build release APK
+        script: |
+          flutter build apk \
+            --release \
+            --target-platform android-arm64,android-arm \
+            --split-per-abi \
+            --dart-define=dart.vm.product=true
+          
+          echo ""
+          echo "📦 APK files built:"
+          ls -lh build/app/outputs/apk/release/
+
+      # ── 9. (Optional) Build App Bundle for Play Store ─────────────
+      - name: Build App Bundle (AAB)
+        script: |
+          flutter build appbundle \
+            --release \
+            --dart-define=dart.vm.product=true
+          
+          echo ""
+          echo "📦 AAB file:"
+          ls -lh build/app/outputs/bundle/release/
+
+    artifacts:
+      # APK files (split by ABI — smaller downloads per device)
+      - build/app/outputs/apk/release/*.apk
+      # App Bundle for Google Play Store
+      - build/app/outputs/bundle/release/*.aab
+      # Flutter build log
+      - flutter_drive.log
+      # Debug symbols for crash reporting
+      - build/app/outputs/mapping/release/mapping.txt
+
+    publishing:
+      email:
+        recipients:
+          - your-email@example.com   # ← Change to your email
+        notify:
+          success: true
+          failure: true
+
+      # Uncomment to publish to Google Play (requires Play Store integration)
+      # google_play:
+      #   credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
+      #   track: internal
+      #   submit_as_draft: true
