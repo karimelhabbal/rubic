@@ -1,17 +1,28 @@
-name: Build Android APK & Windows EXE
+name: Build APK and Windows
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-android:
-    runs-on: ubuntu-latest
+  build:
+
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: apk
+
+          - os: windows-latest
+            target: windows
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java
+        if: matrix.target == 'apk'
         uses: actions/setup-java@v4
         with:
           distribution: zulu
@@ -24,49 +35,36 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Install Dependencies
+      - name: Enable Windows Desktop
+        if: matrix.target == 'windows'
+        run: flutter config --enable-windows-desktop
+
+      - name: Create Missing Platforms
+        shell: bash
+        run: |
+          flutter create .
+
+      - name: Get Dependencies
         run: flutter pub get
 
-      - name: Fix Android Project
-        run: |
-          rm -rf android
-          flutter create --platforms=android --org com.rubic.app .
-          git checkout -- pubspec.yaml lib/
-
-      - name: Build Universal APK
+      - name: Build APK
+        if: matrix.target == 'apk'
         run: flutter build apk --release
 
       - name: Upload APK
+        if: matrix.target == 'apk'
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: app-release
           path: build/app/outputs/flutter-apk/app-release.apk
 
-  build-windows:
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.22.0'
-          channel: stable
-          cache: true
-
-      - name: Enable Windows Desktop
-        run: flutter config --enable-windows-desktop
-
-      - name: Get Packages
-        run: flutter pub get
-
       - name: Build Windows
+        if: matrix.target == 'windows'
         run: flutter build windows --release
 
       - name: Upload Windows Build
+        if: matrix.target == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: windows-exe
+          name: windows-release
           path: build/windows/x64/runner/Release
