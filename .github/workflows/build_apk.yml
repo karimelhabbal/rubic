@@ -1,4 +1,4 @@
-name: Build APK and Windows ZIP
+name: Build APK and Windows
 
 on:
   workflow_dispatch:
@@ -9,32 +9,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: zulu
-          java-version: '17'
+          java-version: "17"
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
-          channel: stable
-          cache: true
-
-      - name: Create Android Platform If Missing
-        run: flutter create .
+          flutter-version: "3.22.0"
 
       - name: Get Packages
         run: flutter pub get
 
-      - name: Build Universal APK
+      - name: Recreate Android Folder
+        run: |
+          rm -rf android
+          flutter create --platforms=android .
+
+      - name: Get Packages Again
+        run: flutter pub get
+
+      - name: Build APK
         run: flutter build apk --release
 
-      - name: Upload APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
@@ -44,35 +46,33 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
-          channel: stable
-          cache: true
+          flutter-version: "3.22.0"
 
-      - name: Enable Windows Desktop
+      - name: Enable Windows
         run: flutter config --enable-windows-desktop
-
-      - name: Create Windows Platform If Missing
-        run: flutter create .
 
       - name: Get Packages
         run: flutter pub get
 
-      - name: Build Windows Release
+      - name: Create Windows Platform
+        run: flutter create --platforms=windows .
+
+      - name: Build Windows
         run: flutter build windows --release
 
-      - name: Create Windows ZIP
+      - name: Zip Windows Build
+        shell: powershell
         run: |
-          powershell Compress-Archive `
-            -Path build/windows/x64/runner/Release/* `
-            -DestinationPath build/windows/x64/runner/windows-release.zip
+          Compress-Archive `
+          -Path build/windows/x64/runner/Release/* `
+          -DestinationPath build/windows/x64/runner/windows-release.zip
 
-      - name: Upload Windows ZIP Artifact
+      - name: Upload Windows ZIP
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
